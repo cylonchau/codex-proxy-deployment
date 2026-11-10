@@ -1,0 +1,37 @@
+# 内置 Postgres。与 compose.yaml 叠加使用:./ops.sh 在 .env 里 DATABASE_URL 为空时自动叠加这个文件。
+# 用外部 Postgres(DATABASE_URL 有值)时不会加载它,也就不会起 postgres 容器。
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab   # PostgreSQL 16.15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openwebui
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui -d openwebui"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 1g
+    pids_limit: 200
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    # 不发布端口:只在 compose 内部网络里被 Open WebUI 访问
+
+  openwebui:
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

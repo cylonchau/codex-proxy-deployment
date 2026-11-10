@@ -1,6 +1,10 @@
-# Open WebUI + Postgres + Codex(CLI 转 OpenAI 兼容 API)
+# Open WebUI + Codex(CLI 转 OpenAI 兼容 API)
+# 这个文件只有核心服务。./ops.sh 会按 .env 叠加其他文件:
+#   数据库:DATABASE_URL 为空 → compose.db.yaml(自动起内置 Postgres);填了 → 连外部 Postgres,不叠加
+#   访问方式:HTTPS=true → compose.tls.yaml(nginx 监听 80/443,用你的证书);否则 → compose.plain.yaml(直接发布 WEBUI_PORT)
+# 所以请用 ./ops.sh 启动,不要直接 docker compose up。
 # 变量来自 .env(见 .env.example);运维命令见 ./ops.sh 与 README.md
-name: openwebui-codex   # 固定项目名:卷名不随目录名变化(openwebui-codex_pgdata 等)
+name: openwebui-codex   # 固定项目名:卷名不随目录名变化(openwebui-codex_codex-home 等)
 
 x-logging: &logging
   driver: json-file
@@ -9,27 +13,6 @@ x-logging: &logging
     max-file: "5"
 
 services:
-  postgres:
-    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab   # PostgreSQL 16.15
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: openwebui
-      POSTGRES_USER: openwebui
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U openwebui -d openwebui"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-    mem_limit: 1g
-    pids_limit: 200
-    security_opt: ["no-new-privileges:true"]
-    logging: *logging
-    # 不发布端口:只在 compose 内部网络里被 Open WebUI 访问
-
   codex-api:
     build:
       context: ./codex-api
@@ -63,16 +46,16 @@ services:
     image: ghcr.io/open-webui/open-webui@sha256:59b912d4246103c7285de0e9a5f2f6586614c06b4c4e46edc51a8f29e7b099a5   # Open WebUI 0.13.3
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
       codex-api:
         condition: service_healthy
-    ports:
-      - "${WEBUI_BIND:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
+      # 用内置 Postgres 时,compose.db.yaml 会在这里再加上 postgres
+    # 对外端口不在这里:HTTPS=true 时由 compose.tls.yaml 的 nginx 监听 80/443,否则由 compose.plain.yaml 发布 WEBUI_PORT
     environment:
       WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:?在 .env 里设置 WEBUI_SECRET_KEY}"
       WEBUI_NAME: "${WEBUI_NAME:-Codex Web}"
-      DATABASE_URL: "postgresql://openwebui:${POSTGRES_PASSWORD}@postgres:5432/openwebui"
+      # 外部库:来自 .env;内置库:./ops.sh 用 POSTGRES_PASSWORD 拼好后传进来。
+      # 这里故意不给默认值,避免没经过 ./ops.sh 时悄悄退回 SQLite。
+      DATABASE_URL: "${DATABASE_URL:?未设置 DATABASE_URL:请用 ./ops.sh 启动(它会自动选内置或外部数据库)}"
       ENABLE_OLLAMA_API: "false"
       OPENAI_API_BASE_URL: "http://codex-api:8000/v1"
       OPENAI_API_KEY: "${CODEX_API_KEY}"
@@ -102,7 +85,6 @@ services:
     logging: *logging
 
 volumes:
-  pgdata:
   codex-home:
   codex-workspace:
   owui-data:
