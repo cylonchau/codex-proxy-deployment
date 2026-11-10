@@ -1,0 +1,108 @@
+# Open WebUI + Postgres + Codex(CLI 转 OpenAI 兼容 API)
+# 变量来自 .env(见 .env.example);运维命令见 ./ops.sh 与 README.md
+name: openwebui-codex   # 固定项目名:卷名不随目录名变化(openwebui-codex_pgdata 等)
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab   # PostgreSQL 16.15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: openwebui
+      POSTGRES_USER: openwebui
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?在 .env 里设置 POSTGRES_PASSWORD}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openwebui -d openwebui"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    mem_limit: 1g
+    pids_limit: 200
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    # 不发布端口:只在 compose 内部网络里被 Open WebUI 访问
+
+  codex-api:
+    build:
+      context: ./codex-api
+      args:
+        CODEX_VERSION: "0.167.0"
+    image: local/codex-api:codex-0.167.0
+    restart: unless-stopped
+    ports:
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-8100}:8000"
+    environment:
+      API_KEY: "${CODEX_API_KEY:?在 .env 里设置 CODEX_API_KEY}"
+      CODEX_SANDBOX: "${CODEX_SANDBOX:-read-only}"
+      CODEX_DEFAULT_MODEL: "${CODEX_DEFAULT_MODEL:-codex}"
+      CODEX_MODELS: "${CODEX_MODELS:-}"
+      SESSION_TTL_DAYS: "${SESSION_TTL_DAYS:-30}"
+      MAX_CONCURRENCY: "${MAX_CONCURRENCY:-4}"
+    volumes:
+      - codex-home:/home/node/.codex   # 登录令牌 auth.json(敏感)
+      - codex-workspace:/workspace
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 512
+    stop_grace_period: 130s   # 停止时等进行中的请求跑完(服务内最多等 120s)
+    logging: *logging
+
+  openwebui:
+    image: ghcr.io/open-webui/open-webui@sha256:59b912d4246103c7285de0e9a5f2f6586614c06b4c4e46edc51a8f29e7b099a5   # Open WebUI 0.13.3
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      codex-api:
+        condition: service_healthy
+    ports:
+      - "${WEBUI_BIND:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
+    environment:
+      WEBUI_SECRET_KEY: "${WEBUI_SECRET_KEY:?在 .env 里设置 WEBUI_SECRET_KEY}"
+      WEBUI_NAME: "${WEBUI_NAME:-Codex Web}"
+      DATABASE_URL: "postgresql://openwebui:${POSTGRES_PASSWORD}@postgres:5432/openwebui"
+      ENABLE_OLLAMA_API: "false"
+      OPENAI_API_BASE_URL: "http://codex-api:8000/v1"
+      OPENAI_API_KEY: "${CODEX_API_KEY}"
+      # 注册:关闭自助注册,新用户默认待审批(第一个管理员不受此限制)
+      ENABLE_SIGNUP: "false"
+      DEFAULT_USER_ROLE: "pending"
+      # 把用户 ID / 会话 ID 转发给 codex-api,用于分用户、分会话
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      # 每个后台任务都会起一次 codex exec(耗额度、占并发),只保留标题生成
+      ENABLE_TAGS_GENERATION: "false"
+      ENABLE_FOLLOW_UP_GENERATION: "false"
+      ENABLE_AUTOCOMPLETE_GENERATION: "false"
+      ENABLE_SEARCH_QUERY_GENERATION: "false"
+      ENABLE_RETRIEVAL_QUERY_GENERATION: "false"
+    volumes:
+      - owui-data:/app/backend/data   # 上传文件、向量库(用户和聊天在 Postgres)
+    healthcheck:
+      # 与镜像自带的检查相同,只是加了长的启动宽限期:首次启动要下载嵌入模型,可能超过 2 分钟。
+      # 宽限期内的失败不算 unhealthy,否则 `docker compose up --wait` 会提前报失败。
+      test: ["CMD-SHELL", "curl --silent --fail http://localhost:8080/health | jq -ne 'input.status == true' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+    mem_limit: 3g
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+
+volumes:
+  pgdata:
+  codex-home:
+  codex-workspace:
+  owui-data:
