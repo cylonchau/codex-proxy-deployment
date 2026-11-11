@@ -102,9 +102,13 @@ init_env() {
 }
 
 cmd_login() {
-  echo "在浏览器打开下面显示的链接,输入验证码,用公司 Team 账号登录。"
-  echo "若页面提示未启用设备码登录,需要在 ChatGPT 设置里开启(Team 工作区可能要管理员开启)。"
-  dc exec codex-api codex login --device-auth
+  echo "账号不支持设备码登录时用这个方式(标准浏览器 URL 登录):"
+  echo "1) 先在你自己电脑上开一个新终端,建立隧道(不要关,保持这个终端开着):"
+  echo "     ssh -L 1455:127.0.0.1:1455 -L 1457:127.0.0.1:1457 <用户名>@<这台服务器地址>"
+  echo "2) 隧道建好后,回到这边继续,下面会打印一个链接;在你自己电脑的浏览器里打开它并登录。"
+  echo "   (如果账号支持设备码登录,改跑: ./ops.sh compose exec codex-api codex login --device-auth)"
+  echo
+  dc exec codex-api codex login
 }
 
 cmd_up() {

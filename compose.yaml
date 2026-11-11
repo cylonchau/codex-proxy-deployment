@@ -22,6 +22,11 @@ services:
     restart: unless-stopped
     ports:
       - "${API_BIND:-127.0.0.1}:${API_PORT:-8100}:8000"
+      # 登录用(仅本机回环):账号不支持设备码登录时,./ops.sh login 走浏览器 URL 登录,
+      # 需要把这两个端口通过 SSH 隧道转发到你自己的电脑,见 README「Codex 登录」。
+      # codex 的回调服务器优先用 1455,被占用时退到 1457,所以两个都转发。
+      - "127.0.0.1:1455:1455"
+      - "127.0.0.1:1457:1457"
     environment:
       API_KEY: "${CODEX_API_KEY:?在 .env 里设置 CODEX_API_KEY}"
       CODEX_SANDBOX: "${CODEX_SANDBOX:-read-only}"
@@ -29,6 +34,13 @@ services:
       CODEX_MODELS: "${CODEX_MODELS:-}"
       SESSION_TTL_DAYS: "${SESSION_TTL_DAYS:-30}"
       MAX_CONCURRENCY: "${MAX_CONCURRENCY:-4}"
+      # 公司出口代理(egress proxy):服务器不能直连外网时填,codex 和 Node 的 HTTP 客户端都会读这几个
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      ALL_PROXY: "${ALL_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-localhost,127.0.0.1}"
+      # 代理会做 TLS 解密(中间人证书)时,把代理的根证书挂进容器并在这里指路径
+      CODEX_CA_CERTIFICATE: "${CODEX_CA_CERTIFICATE:-}"
     volumes:
       - codex-home:/home/node/.codex   # 登录令牌 auth.json(敏感)
       - codex-workspace:/workspace

@@ -51,7 +51,7 @@ chmod +x ops.sh
 首次耗时几分钟(拉镜像、装 Codex、下载嵌入模型)。之后:
 
 1. 浏览器打开 `https://你的域名`(最简方式是 `http://127.0.0.1:3000`),**第一个注册的账号是管理员**。
-2. Codex 登录:`./ops.sh up` 末尾会引导,也可以随时 `./ops.sh login`。在浏览器打开它显示的链接,输入验证码,用公司 Team 账号登录,验证码 15 分钟内有效。
+2. Codex 登录:`./ops.sh up` 末尾会引导,也可以随时 `./ops.sh login`,详细步骤(含账号不支持设备码时怎么办)见「五、Codex 登录」。
 3. 回到 Open WebUI 选模型,开始对话。
 
 ## 二、访问方式:HTTPS 或直连
@@ -112,10 +112,11 @@ HTTPS 模式下 Open WebUI 不再单独占宿主机端口,3000 不会被占用�
 2. 在 `.env` 里填:
 
    ```
-   DATABASE_URL=postgresql://openwebui:<URL编码后的密码>@<主机>:5432/openwebui?sslmode=require
+   DATABASE_URL=postgresql://openwebui:<URL编码后的密码>@<主机>:5432/openwebui
    ```
 
-   密码里的特殊字符要 URL 编码(`@` 写成 `%40`,`$` 写成 `%24`)。不需要 TLS 就去掉 `?sslmode=require`。私有 CA 签发的证书需要把 CA 文件挂进容器,这里没有预置。
+   密码里的特殊字符要 URL 编码(`@` 写成 `%40`,`$` 写成 `%24`)。默认不加 `sslmode`,数据库支持 TLS 就用,不支持就明文连接。
+   数据库**要求**强制 TLS 时,才在末尾加 `?sslmode=require`;反过来数据库没开 TLS 却写了 `require`,openwebui 会报 `server does not support SSL, but SSL was required` 并不停重启。私有 CA 签发的证书需要把 CA 文件挂进容器,这里没有预置。
 3. `./ops.sh up`。启动失败时,先确认 Docker 主机能连上这个地址和端口,再 `./ops.sh logs openwebui`。
 
 ### 切换
@@ -197,9 +198,54 @@ HTTPS 模式下 Open WebUI 不再单独占宿主机端口,3000 不会被占用�
 
 ## 五、Codex 登录(公司 Team 账号)
 
-- `./ops.sh login` 用设备码登录。页面提示没有启用设备码登录时,需要先在 ChatGPT 的安全设置里开启;**Team 工作区可能要管理员开启,这一点没有在 Team 账号上验证过。**
-- 登录令牌保存在卷 `openwebui-codex_codex-home`(敏感),重启不丢。登录失效(改密码、被撤销)时,聊天里会直接提示"登录已失效",重新 `./ops.sh login` 即可。
+`./ops.sh login` 默认走**标准浏览器 URL 登录**(不是设备码)。很多公司 Team/Enterprise 账号不支持设备码登录,登录页会提示"请联系你的工作空间管理员,以启用设备代码身份验证",这种情况就用这个方式。
+
+因为服务器是无头环境,标准登录流程需要把它的本地回调端口,通过 SSH 隧道转发到你自己电脑的浏览器:
+
+1. 在你自己电脑上开一个终端,建立隧道并保持开着(把 `<用户名>@<服务器地址>` 换成实际的):
+
+   ```bash
+   ssh -L 1455:127.0.0.1:1455 -L 1457:127.0.0.1:1457 <用户名>@<服务器地址>
+   ```
+
+   转发两个端口是因为 codex 的回调服务器优先用 1455,被占用时会退到 1457。
+
+2. 隧道开着不要关,另开一个终端登录服务器,进入部署目录运行:
+
+   ```bash
+   ./ops.sh login
+   ```
+
+   它会打印一个登录链接,在你自己电脑的浏览器里打开(不是服务器上的浏览器),用公司 Team 账号登录、授权。浏览器登录成功后会跳转到 `localhost:1455`,经隧道回到服务器上的回调服务器,登录随之完成。
+
+3. 如果账号**支持**设备码登录(页面不报上面那个提示),可以改用更简单的方式,不需要建隧道:
+
+   ```bash
+   ./ops.sh compose exec codex-api codex login --device-auth
+   ```
+
+   在任意设备的浏览器里打开它显示的链接,输入验证码即可,验证码 15 分钟内有效。
+
+- 登录令牌保存在卷 `openwebui-codex_codex-home`(敏感),重启不丢。登录失效(改密码、被撤销)时,聊天里会直接提示"登录已失效",重新登录即可。
 - 所有用户共用这一个账号的额度。Open WebUI 里选模型 **Codex quota** 发任意消息,可以看当前额度。
+- 上面两种登录方式都没有在真实的 Team 账号上跑通过,是按 OpenAI 官方文档和社区做法推出来的,第一次用请留出时间排查。
+
+### 出口代理(egress proxy)
+
+服务器不能直接访问外网、必须经过公司出口代理时,在 `.env` 里填 `HTTPS_PROXY`(通常 `HTTP_PROXY`、`ALL_PROXY` 也一起填,看代理要求),再 `./ops.sh up` 重新应用。`codex-api` 容器里的 Codex CLI 和它的 HTTP 客户端会读取这几个标准环境变量。
+
+- `NO_PROXY` 默认是 `localhost,127.0.0.1`,不需要为 `postgres`、`openwebui` 这些内部服务名加白名单,因为它们是容器间直连,不经过这个出口代理。
+- 代理如果会做 TLS 解密(中间人证书,常见于企业网关),还需要把代理的根证书交给容器信任,否则 Codex 连 `chatgpt.com`/`api.openai.com` 会报证书错误:在 `compose.yaml` 的 `codex-api` 服务下加一行把证书挂进去,例如:
+
+  ```yaml
+      volumes:
+        - codex-home:/home/node/.codex
+        - codex-workspace:/workspace
+        - ./certs/company-proxy-ca.pem:/etc/ssl/certs/company-proxy-ca.pem:ro
+  ```
+
+  然后在 `.env` 里填 `CODEX_CA_CERTIFICATE=/etc/ssl/certs/company-proxy-ca.pem`(容器内路径),`./ops.sh up` 重建生效。
+- 这部分同样没有在真实的企业代理环境里验证过,配置依据是 Codex CLI 读取的标准代理环境变量(`HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY`)和证书变量(`CODEX_CA_CERTIFICATE`,备选 `SSL_CERT_FILE`)。接入后请先用 `./ops.sh login` 和一次正常对话确认真的能连通。
 
 ## 六、日常运维
 
